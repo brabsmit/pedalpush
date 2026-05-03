@@ -7,8 +7,10 @@ tracks not yet in the cache.
 CLI:
   python3 build_pool.py --pull       # fetch playlists + tracks (idempotent)
   python3 build_pool.py --enrich     # BPM-enrich tracks not yet in cache
+  python3 build_pool.py --mine       # Phase B: search public spin playlists, keep
+                                     # those overlapping with primary signal
   python3 build_pool.py --stats      # pool size + per-tier breakdown
-  python3 build_pool.py --all        # pull, then enrich, then stats
+  python3 build_pool.py --all        # pull, then enrich, then stats (no mining)
 """
 import argparse
 import json
@@ -167,6 +169,166 @@ def pull_all(conn: sqlite3.Connection, token: str) -> dict:
     return stats
 
 
+# ---------- mine (phase B) ----------
+
+MINING_QUERIES = [
+    "spin",
+    "spin class",
+    "spin playlist",
+    "cycling",
+    "indoor cycling",
+    "cyclebar",
+    "soulcycle",
+    "bike bar",
+]
+
+
+def search_playlists(token: str, query: str, max_pages: int = 5) -> list[dict]:
+    """Paginated playlist search. 50 per page; Spotify caps offset at 1000."""
+    out: list[dict] = []
+    for page_idx in range(max_pages):
+        offset = page_idx * 50
+        qs = urllib.parse.urlencode({
+            "q": query, "type": "playlist", "limit": 50, "offset": offset,
+        })
+        try:
+            page = sp_get(token, f"/search?{qs}")
+        except Exception:
+            break
+        items = page.get("playlists", {}).get("items", []) or []
+        items = [p for p in items if p]
+        if not items:
+            break
+        out.extend(items)
+        if len(items) < 50:
+            break
+    return out
+
+
+def fetch_playlist_track_meta(token: str, pid: str) -> list[dict]:
+    """Returns [{id, artist (primary, lowercased)}, ...]"""
+    out: list[dict] = []
+    next_path = f"/playlists/{pid}/tracks?limit=100&fields=items(track(id,artists(name))),next"
+    while next_path:
+        page = sp_get(token, next_path)
+        for item in page.get("items", []) or []:
+            t = item.get("track")
+            if t and t.get("id"):
+                primary_artist = t["artists"][0]["name"].lower() if t.get("artists") else ""
+                out.append({"id": t["id"], "artist": primary_artist})
+        nxt = page.get("next")
+        next_path = nxt.replace("https://api.spotify.com/v1", "") if nxt else None
+    return out
+
+
+def mine(conn: sqlite3.Connection, token: str,
+         min_shared_artists: int = 5,
+         min_size: int = 8, max_size: int = 80) -> dict:
+    ensure_pool_schema(conn)
+
+    # Build Bryan's primary artist set (the comparison anchor).
+    # Use track_bpm as the artist-name source for primary tracks.
+    rows = conn.execute("""
+        SELECT DISTINCT LOWER(tb.artist)
+        FROM playlist_tracks pt
+        JOIN playlists pl ON pl.id = pt.playlist_id
+        JOIN track_bpm tb ON tb.spotify_track_id = pt.track_id
+        WHERE pl.signal_tier = 'primary' AND tb.artist IS NOT NULL AND tb.artist != ''
+    """).fetchall()
+    primary_artists = {r[0] for r in rows}
+    print(f"Primary artist set: {len(primary_artists)} unique artists\n")
+
+    # Existing playlist IDs (don't re-process)
+    existing_ids = {r[0] for r in conn.execute("SELECT id FROM playlists").fetchall()}
+
+    # Search across all queries, dedupe candidates
+    candidates: dict[str, dict] = {}  # id -> playlist meta
+    for q in MINING_QUERIES:
+        try:
+            results = search_playlists(token, q)
+        except Exception as e:
+            print(f"WARN search '{q}' failed: {e}", file=sys.stderr)
+            continue
+        new_for_query = 0
+        for p in results:
+            pid = p.get("id")
+            if not pid or pid in candidates or pid in existing_ids:
+                continue
+            owner_id = (p.get("owner") or {}).get("id", "")
+            track_count = (p.get("tracks") or {}).get("total", 0)
+            # Pre-filter: skip Spotify-owned (algorithmic), skip out-of-size playlists
+            if owner_id == "spotify":
+                continue
+            if track_count < min_size or track_count > max_size:
+                continue
+            candidates[pid] = p
+            new_for_query += 1
+        print(f"  search '{q}': {new_for_query} new candidates after pre-filter")
+    print(f"\nTotal unique candidates: {len(candidates)}\n")
+
+    # For each candidate, fetch tracks and compute overlap
+    now = datetime.now(timezone.utc).isoformat()
+    stats = {"checked": 0, "kept": 0, "rejected": 0, "errors": 0,
+             "tracks_added": 0}
+
+    for i, (pid, p) in enumerate(candidates.items(), 1):
+        try:
+            tracks = fetch_playlist_track_meta(token, pid)
+        except Exception as e:
+            stats["errors"] += 1
+            print(f"  [{i:>3}/{len(candidates)}] ERROR fetching {p.get('name')}: {e}",
+                  file=sys.stderr)
+            continue
+        stats["checked"] += 1
+        if not tracks:
+            stats["rejected"] += 1
+            continue
+        cand_artists = {t["artist"] for t in tracks if t["artist"]}
+        shared_artists = primary_artists & cand_artists
+        if len(shared_artists) < min_shared_artists:
+            stats["rejected"] += 1
+            if len(shared_artists) >= max(1, min_shared_artists - 2):
+                print(f"  [{i:>3}/{len(candidates)}] reject shared_artists={len(shared_artists):>2}  "
+                      f"{len(tracks):>3}t  {p.get('name', '?')[:50]}", file=sys.stderr)
+            continue
+
+        # Persist as mined
+        owner = (p.get("owner") or {}).get("display_name") or (p.get("owner") or {}).get("id", "?")
+        artist_rate = len(shared_artists) / max(1, len(cand_artists))
+        conn.execute("""
+            INSERT INTO playlists (id, name, owner, signal_tier, source_label, snapshot_id, track_count, fetched_at)
+            VALUES (?, ?, ?, 'mined', ?, ?, ?, ?)
+            ON CONFLICT(id) DO NOTHING
+        """, (pid, p.get("name", "?"), owner,
+              f"mined:shared_artists={len(shared_artists)},rate={artist_rate:.2%}",
+              p.get("snapshot_id"), len(tracks), now))
+        conn.execute("DELETE FROM playlist_tracks WHERE playlist_id=?", (pid,))
+        conn.executemany(
+            "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)",
+            [(pid, t["id"], idx) for idx, t in enumerate(tracks)],
+        )
+        conn.commit()
+        stats["kept"] += 1
+        stats["tracks_added"] += len(tracks)
+        print(f"  [{i:>3}/{len(candidates)}] KEPT  shared_artists={len(shared_artists):>2} ({artist_rate:>4.0%})  "
+              f"{len(tracks):>3}t  {p.get('name', '?')[:50]}  by {owner[:25]}")
+
+    return stats
+
+
+def cmd_mine(min_shared_artists: int) -> int:
+    conn = db_connect()
+    ensure_pool_schema(conn)
+    token = get_access_token()
+    # Wipe prior mined-tier so we re-evaluate cleanly
+    conn.execute("DELETE FROM playlist_tracks WHERE playlist_id IN (SELECT id FROM playlists WHERE signal_tier='mined')")
+    conn.execute("DELETE FROM playlists WHERE signal_tier='mined'")
+    conn.commit()
+    stats = mine(conn, token, min_shared_artists=min_shared_artists)
+    print(f"\nMining result: {stats}")
+    return 0
+
+
 # ---------- enrich ----------
 
 def cmd_enrich(conn: sqlite3.Connection) -> int:
@@ -265,8 +427,11 @@ def main() -> int:
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--pull", action="store_true")
     g.add_argument("--enrich", action="store_true")
+    g.add_argument("--mine", action="store_true")
     g.add_argument("--stats", action="store_true")
     g.add_argument("--all", action="store_true")
+    p.add_argument("--min-shared-artists", type=int, default=5,
+                   help="Min shared artists with primary (mining filter)")
     args = p.parse_args()
 
     conn = db_connect()
@@ -277,6 +442,9 @@ def main() -> int:
         print("Pulling primary + secondary playlists...\n")
         stats = pull_all(conn, token)
         print(f"\nPull result: {stats}")
+
+    if args.mine:
+        return cmd_mine(args.min_shared_artists)
 
     if args.enrich or args.all:
         cmd_enrich(conn)
