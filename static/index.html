@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>PedalPush</title>
+<style>
+  :root {
+    --bg: #111418;
+    --panel: #1a1f26;
+    --panel-2: #232a33;
+    --border: #2c343f;
+    --text: #e6e8eb;
+    --muted: #8a94a3;
+    --sit: #4ea1ff;
+    --jog: #ffb454;
+    --climb: #ff6b6b;
+    --good: #4ade80;
+    --warn: #f59e0b;
+    --bad: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 0.5px; }
+  .targets button, .pub-btn {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); padding: 6px 12px;
+    border-radius: 6px; cursor: pointer; font-size: 13px;
+  }
+  .targets button.active { background: var(--sit); border-color: var(--sit); color: #001; }
+  .pub-btn { background: var(--good); color: #001; border-color: var(--good); font-weight: 600; }
+  .pub-btn:disabled { background: var(--panel-2); color: var(--muted); cursor: not-allowed; border-color: var(--border); font-weight: 400; }
+  .toggle { color: var(--muted); display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .name-input {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); padding: 6px 10px;
+    border-radius: 6px; font-size: 13px; width: 280px;
+  }
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1.2fr;
+    gap: 1px;
+    height: calc(100vh - 49px);
+    background: var(--border);
+  }
+  .col {
+    background: var(--panel);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .col-head {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .col-title {
+    font-weight: 600; font-size: 13px;
+    text-transform: uppercase; letter-spacing: 1px;
+  }
+  .col[data-variant=sit]   .col-title { color: var(--sit); }
+  .col[data-variant=jog]   .col-title { color: var(--jog); }
+  .col[data-variant=climb] .col-title { color: var(--climb); }
+  .col-search {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); padding: 5px 8px;
+    border-radius: 4px; font-size: 12px;
+    flex: 1;
+  }
+  .col-row { display: flex; gap: 6px; align-items: center; }
+  .shuf-btn {
+    background: var(--panel-2); color: var(--muted);
+    border: 1px solid var(--border); padding: 5px 8px;
+    border-radius: 4px; font-size: 13px; cursor: pointer; line-height: 1;
+  }
+  .shuf-btn:hover { color: var(--text); }
+  .col-body { flex: 1; overflow-y: auto; padding: 6px; }
+  .card {
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 5px; padding: 8px 10px; margin-bottom: 6px;
+    cursor: grab; user-select: none;
+    border-left: 3px solid var(--border);
+  }
+  .card:active { cursor: grabbing; }
+  .card.dragging { opacity: 0.4; }
+  .card[data-variant=sit]   { border-left-color: var(--sit); }
+  .card[data-variant=jog]   { border-left-color: var(--jog); }
+  .card[data-variant=climb] { border-left-color: var(--climb); }
+  .card-line1 { font-weight: 500; font-size: 13px; }
+  .card-line2 { color: var(--muted); font-size: 12px; margin-top: 2px;
+    display: flex; gap: 8px; align-items: center; }
+  .star { color: var(--warn); }
+  .timeline-body { padding: 0; }
+  .ti {
+    display: grid; grid-template-columns: 30px 1fr 60px 24px;
+    gap: 8px; align-items: center;
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+    cursor: grab; user-select: none;
+  }
+  .ti.dragging { opacity: 0.4; }
+  .ti-pos { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .ti-meta { color: var(--muted); font-size: 12px; }
+  .ti-dur { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; font-size: 12px; }
+  .ti-rm { color: var(--muted); cursor: pointer; text-align: center; }
+  .ti-rm:hover { color: var(--bad); }
+  .ti[data-variant=sit]   { border-left: 3px solid var(--sit); }
+  .ti[data-variant=jog]   { border-left: 3px solid var(--jog); }
+  .ti[data-variant=climb] { border-left: 3px solid var(--climb); }
+  .drop-target { background: rgba(78,161,255,0.1); }
+  .total {
+    padding: 10px 12px; font-size: 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .total.good { color: var(--good); }
+  .total.warn { color: var(--warn); }
+  .total.bad { color: var(--bad); }
+  .empty { color: var(--muted); padding: 20px; text-align: center; font-size: 13px; }
+  .toast {
+    position: fixed; bottom: 16px; right: 16px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    padding: 10px 14px; border-radius: 6px; max-width: 360px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  }
+  .toast a { color: var(--sit); }
+</style>
+</head>
+<body>
+<header>
+  <h1>PedalPush</h1>
+  <div class="targets">
+    <button data-target="15">15</button>
+    <button data-target="20">20</button>
+    <button data-target="30" class="active">30</button>
+    <button data-target="45">45</button>
+  </div>
+  <label class="toggle">
+    <input type="checkbox" id="includePast" />
+    include past tracks
+  </label>
+  <div style="flex:1"></div>
+  <input class="name-input" id="plName" placeholder="Playlist name" />
+  <button class="pub-btn" id="publish" disabled>Publish</button>
+</header>
+
+<main>
+  <section class="col" data-variant="sit">
+    <div class="col-head">
+      <div class="col-title">Sit · 100–130</div>
+      <div class="col-row">
+        <input class="col-search" data-variant="sit" placeholder="search artist or title" />
+        <button class="shuf-btn" data-shuf="sit" title="shuffle within score bands">🔀</button>
+      </div>
+    </div>
+    <div class="col-body" data-variant="sit"><div class="empty">Loading…</div></div>
+  </section>
+  <section class="col" data-variant="jog">
+    <div class="col-head">
+      <div class="col-title">Jog · 70–80 / 140–160</div>
+      <div class="col-row">
+        <input class="col-search" data-variant="jog" placeholder="search artist or title" />
+        <button class="shuf-btn" data-shuf="jog" title="shuffle within score bands">🔀</button>
+      </div>
+    </div>
+    <div class="col-body" data-variant="jog"><div class="empty">Loading…</div></div>
+  </section>
+  <section class="col" data-variant="climb">
+    <div class="col-head">
+      <div class="col-title">Climb · 55–65 / 110–130</div>
+      <div class="col-row">
+        <input class="col-search" data-variant="climb" placeholder="search artist or title" />
+        <button class="shuf-btn" data-shuf="climb" title="shuffle within score bands">🔀</button>
+      </div>
+    </div>
+    <div class="col-body" data-variant="climb"><div class="empty">Loading…</div></div>
+  </section>
+  <section class="col">
+    <div class="col-head">
+      <div class="col-title" style="color:var(--text)">Timeline</div>
+    </div>
+    <div class="total"><span>Total</span><span id="totalText">0:00 / 30:00</span></div>
+    <div class="col-body timeline-body" id="timeline">
+      <div class="empty">Drag tracks here</div>
+    </div>
+  </section>
+</main>
+
+<script>
+const STATE = {
+  target: 30,
+  includePast: false,
+  candidates: { sit: [], jog: [], climb: [] },
+  search:     { sit: "", jog: "", climb: "" },
+  shuffle:    { sit: false, jog: false, climb: false },
+  timeline: [],   // [{track_id, artist, title, bpm, duration_ms, in_past, variant}]
+  byId: new Map(),
+};
+
+const fmt = (ms) => {
+  const s = Math.round(ms / 1000);
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${String(r).padStart(2, '0')}`;
+};
+
+async function loadVariant(v) {
+  const params = new URLSearchParams({
+    variant: v,
+    include_past: STATE.includePast ? "1" : "0",
+    shuffle: STATE.shuffle[v] ? "1" : "0",
+    q: STATE.search[v],
+    limit: "200",
+  });
+  STATE.shuffle[v] = false; // one-shot — next load is back to deterministic
+  const r = await fetch(`/api/candidates?${params}`);
+  const data = await r.json();
+  STATE.candidates[v] = data.candidates || [];
+  data.candidates.forEach(c => STATE.byId.set(c.track_id, c));
+  renderCandidates(v);
+}
+
+function renderCandidates(v) {
+  const body = document.querySelector(`.col-body[data-variant=${v}]`);
+  const cards = STATE.candidates[v];
+  if (!cards.length) {
+    body.innerHTML = `<div class="empty">No candidates</div>`;
+    return;
+  }
+  body.innerHTML = cards.map(c => `
+    <div class="card" draggable="true" data-id="${c.track_id}" data-variant="${v}">
+      <div class="card-line1">${escapeHtml(c.title)}</div>
+      <div class="card-line2">
+        ${c.in_past ? '<span class="star">★</span>' : ''}
+        <span>${escapeHtml(c.artist)}</span>
+        <span>·</span>
+        <span>${c.bpm} BPM</span>
+        <span>·</span>
+        <span>${fmt(c.duration_ms)}</span>
+      </div>
+    </div>
+  `).join("");
+  body.querySelectorAll(".card").forEach(el => attachDragSource(el, "card"));
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, ch => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[ch]));
+}
+
+function renderTimeline() {
+  const tl = document.getElementById("timeline");
+  if (!STATE.timeline.length) {
+    tl.innerHTML = `<div class="empty">Drag tracks here</div>`;
+  } else {
+    tl.innerHTML = STATE.timeline.map((t, i) => `
+      <div class="ti" draggable="true" data-idx="${i}" data-variant="${t.variant}">
+        <div class="ti-pos">${i + 1}</div>
+        <div>
+          <div>${escapeHtml(t.title)}</div>
+          <div class="ti-meta">${escapeHtml(t.artist)} · ${t.bpm} BPM</div>
+        </div>
+        <div class="ti-dur">${fmt(t.duration_ms)}</div>
+        <div class="ti-rm" data-rm="${i}" title="remove">✕</div>
+      </div>
+    `).join("");
+    tl.querySelectorAll(".ti").forEach(el => attachDragSource(el, "ti"));
+    tl.querySelectorAll("[data-rm]").forEach(el => {
+      el.addEventListener("click", e => {
+        const idx = Number(e.target.dataset.rm);
+        STATE.timeline.splice(idx, 1);
+        renderTimeline();
+      });
+    });
+  }
+  updateTotal();
+  document.getElementById("publish").disabled = !STATE.timeline.length;
+}
+
+function updateTotal() {
+  const totalMs = STATE.timeline.reduce((s, t) => s + t.duration_ms, 0);
+  const targetMs = STATE.target * 60_000;
+  const el = document.getElementById("totalText");
+  el.textContent = `${fmt(totalMs)} / ${STATE.target}:00`;
+  const parent = el.parentElement;
+  parent.classList.remove("good", "warn", "bad");
+  const diff = Math.abs(totalMs - targetMs);
+  if (diff <= 60_000) parent.classList.add("good");
+  else if (diff <= 180_000) parent.classList.add("warn");
+  else if (totalMs > 0) parent.classList.add("bad");
+}
+
+let dragPayload = null; // { kind: "card"|"ti", id?, idx? }
+
+function attachDragSource(el, kind) {
+  el.addEventListener("dragstart", e => {
+    el.classList.add("dragging");
+    dragPayload = kind === "card"
+      ? { kind, id: el.dataset.id, variant: el.dataset.variant }
+      : { kind, idx: Number(el.dataset.idx) };
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", "x"); // some browsers need this
+  });
+  el.addEventListener("dragend", () => {
+    el.classList.remove("dragging");
+    document.querySelectorAll(".drop-target").forEach(n => n.classList.remove("drop-target"));
+  });
+}
+
+function setupTimelineDropZone() {
+  const tl = document.getElementById("timeline");
+  tl.addEventListener("dragover", e => {
+    if (!dragPayload) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    tl.classList.add("drop-target");
+  });
+  tl.addEventListener("dragleave", e => {
+    if (e.target === tl) tl.classList.remove("drop-target");
+  });
+  tl.addEventListener("drop", e => {
+    e.preventDefault();
+    tl.classList.remove("drop-target");
+    if (!dragPayload) return;
+    const insertIdx = computeInsertIndex(e);
+    if (dragPayload.kind === "card") {
+      const c = STATE.byId.get(dragPayload.id);
+      if (!c) return;
+      STATE.timeline.splice(insertIdx, 0, { ...c, variant: dragPayload.variant });
+    } else {
+      const fromIdx = dragPayload.idx;
+      let toIdx = insertIdx;
+      if (toIdx > fromIdx) toIdx -= 1;
+      const [moved] = STATE.timeline.splice(fromIdx, 1);
+      STATE.timeline.splice(toIdx, 0, moved);
+    }
+    dragPayload = null;
+    renderTimeline();
+  });
+}
+
+function computeInsertIndex(e) {
+  const items = [...document.querySelectorAll("#timeline .ti")];
+  for (let i = 0; i < items.length; i++) {
+    const r = items[i].getBoundingClientRect();
+    if (e.clientY < r.top + r.height / 2) return i;
+  }
+  return items.length;
+}
+
+async function publish() {
+  const name = document.getElementById("plName").value.trim()
+    || defaultName();
+  const track_ids = STATE.timeline.map(t => t.track_id);
+  const btn = document.getElementById("publish");
+  btn.disabled = true;
+  btn.textContent = "Publishing…";
+  try {
+    const r = await fetch("/api/publish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, track_ids }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    toast(`Published <a href="${data.url}" target="_blank">${escapeHtml(data.name)}</a> (${data.track_count} tracks)`);
+  } catch (err) {
+    toast(`Failed: ${escapeHtml(err.message)}`, true);
+  } finally {
+    btn.textContent = "Publish";
+    btn.disabled = false;
+  }
+}
+
+function defaultName() {
+  const d = new Date();
+  const ymd = d.toISOString().slice(0, 10);
+  return `PedalPush ${STATE.target}min ${ymd}`;
+}
+
+function toast(html, isError) {
+  const t = document.createElement("div");
+  t.className = "toast";
+  if (isError) t.style.borderColor = "var(--bad)";
+  t.innerHTML = html;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 6000);
+}
+
+function setupChrome() {
+  document.querySelectorAll(".targets button").forEach(b => {
+    b.addEventListener("click", () => {
+      document.querySelectorAll(".targets button").forEach(x => x.classList.remove("active"));
+      b.classList.add("active");
+      STATE.target = Number(b.dataset.target);
+      document.getElementById("plName").placeholder = defaultName();
+      updateTotal();
+    });
+  });
+  document.getElementById("includePast").addEventListener("change", e => {
+    STATE.includePast = e.target.checked;
+    ["sit", "jog", "climb"].forEach(loadVariant);
+  });
+  document.querySelectorAll(".col-search").forEach(inp => {
+    let t;
+    inp.addEventListener("input", () => {
+      const v = inp.dataset.variant;
+      STATE.search[v] = inp.value;
+      clearTimeout(t);
+      t = setTimeout(() => loadVariant(v), 150);
+    });
+  });
+  document.getElementById("publish").addEventListener("click", publish);
+  document.getElementById("plName").placeholder = defaultName();
+  document.querySelectorAll(".shuf-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const v = btn.dataset.shuf;
+      STATE.shuffle[v] = true;
+      loadVariant(v);
+    });
+  });
+}
+
+setupChrome();
+setupTimelineDropZone();
+["sit", "jog", "climb"].forEach(loadVariant);
+renderTimeline();
+</script>
+</body>
+</html>

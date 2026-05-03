@@ -72,7 +72,8 @@ def db_connect() -> sqlite3.Connection:
             source TEXT NOT NULL,
             status TEXT NOT NULL,
             raw_response TEXT,
-            looked_up_at TEXT NOT NULL
+            looked_up_at TEXT NOT NULL,
+            release_date TEXT
         )
     """)
     conn.commit()
